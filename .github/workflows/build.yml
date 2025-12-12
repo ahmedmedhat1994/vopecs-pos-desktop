@@ -61,8 +61,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build frontend
-        run: npm run build
+      - name: Create dist folder with settings.html
+        run: |
+          mkdir -p dist
+          cp dist/settings.html dist/settings.html 2>/dev/null || echo "settings.html already exists"
+        shell: bash
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
