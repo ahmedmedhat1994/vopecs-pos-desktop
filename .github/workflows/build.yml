@@ -11,6 +11,9 @@ on:
         required: false
         default: 'dev'
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -61,18 +64,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Create dist folder with settings.html
-        run: |
-          mkdir -p dist
-          cp dist/settings.html dist/settings.html 2>/dev/null || echo "settings.html already exists"
-        shell: bash
-
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.event.inputs.version || github.ref_name }}
           releaseName: 'VOPECS POS ${{ github.event.inputs.version || github.ref_name }}'
