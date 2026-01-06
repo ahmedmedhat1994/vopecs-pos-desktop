@@ -190,7 +190,8 @@ fn open_print_window(app: tauri::AppHandle, content: String) -> Result<(), Strin
     let popup_id = POPUP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let label = format!("print-{}", popup_id);
 
-    // Create HTML with proper Arabic support - minimal margins for single page print
+    // Create HTML with proper Arabic support and auto-print script
+    // Uses JavaScript to trigger print on load and close window after print/cancel
     let print_html = format!(
         r#"<!DOCTYPE html>
 <html dir="rtl" lang="ar">
@@ -205,45 +206,106 @@ fn open_print_window(app: tauri::AppHandle, content: String) -> Result<(), Strin
         @media print {{
             html, body {{ margin: 0 !important; padding: 0 !important; }}
             @page {{ margin: 5mm; }}
+            .no-print {{ display: none !important; }}
+        }}
+        .print-actions {{
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            z-index: 9999;
+            display: flex;
+            gap: 10px;
+        }}
+        .print-actions button {{
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 14px;
+        }}
+        .btn-print {{
+            background: #22c55e;
+            color: white;
+        }}
+        .btn-close {{
+            background: #ef4444;
+            color: white;
         }}
     </style>
 </head>
-<body>{}</body>
+<body>
+    <div class="print-actions no-print">
+        <button class="btn-print" onclick="doPrint()">طباعة</button>
+        <button class="btn-close" onclick="closeWindow()">إغلاق</button>
+    </div>
+    {}
+    <script>
+        var printAttempted = false;
+
+        function doPrint() {{
+            if (printAttempted) return;
+            printAttempted = true;
+            window.print();
+            // Reset after a short delay to allow re-printing
+            setTimeout(function() {{ printAttempted = false; }}, 1000);
+        }}
+
+        function closeWindow() {{
+            if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {{
+                window.__TAURI_INTERNALS__.invoke('close_popup_window', {{ label: '{}' }});
+            }} else {{
+                window.close();
+            }}
+        }}
+
+        // Auto-print after page fully loads
+        window.onload = function() {{
+            setTimeout(doPrint, 500);
+        }};
+
+        // Listen for afterprint event to auto-close (works on most browsers)
+        window.onafterprint = function() {{
+            setTimeout(closeWindow, 500);
+        }};
+    </script>
+</body>
 </html>"#,
-        content
+        content, label
     );
 
-    // Save to temp file for proper origin (file:// URLs work better with print)
+    // Save to temp file - use forward slashes for Windows compatibility
     let temp_dir = std::env::temp_dir();
     let temp_file = temp_dir.join(format!("vopecs_print_{}.html", popup_id));
     fs::write(&temp_file, &print_html)
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
-    let file_url = format!("file://{}", temp_file.to_string_lossy());
+    // Convert path to URL - handle Windows paths correctly
+    let file_url = if cfg!(windows) {
+        // Windows: file:///C:/path/to/file
+        format!("file:///{}", temp_file.to_string_lossy().replace("\\", "/"))
+    } else {
+        // Unix: file:///path/to/file
+        format!("file://{}", temp_file.to_string_lossy())
+    };
 
-    let window = WebviewWindowBuilder::new(
+    let _window = WebviewWindowBuilder::new(
         &app,
         &label,
         WebviewUrl::External(file_url.parse().map_err(|e| format!("Invalid URL: {}", e))?),
     )
     .title("طباعة")
-    .inner_size(450.0, 400.0)
+    .inner_size(450.0, 500.0)
     .resizable(true)
     .center()
     .build()
     .map_err(|e| format!("Failed to create print window: {}", e))?;
 
-    // Auto-trigger print dialog from Rust after window loads
-    let window_clone = window.clone();
+    // Clean up temp file after a delay (in background)
+    let temp_file_clone = temp_file.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        let _ = window_clone.print();
-    });
-
-    // Clean up temp file after a delay
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(60));
-        let _ = fs::remove_file(&temp_file);
+        std::thread::sleep(std::time::Duration::from_secs(120));
+        let _ = fs::remove_file(&temp_file_clone);
     });
 
     Ok(())
