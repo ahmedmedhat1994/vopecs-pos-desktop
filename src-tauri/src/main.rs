@@ -367,6 +367,67 @@ const POPUP_HANDLER_SCRIPT: &str = r#"
                 }
             }
 
+            // Create a mock element that supports common DOM operations
+            function createMockElement(tagName) {
+                var children = [];
+                var attributes = {};
+                var styles = {};
+                var element = {
+                    tagName: tagName.toUpperCase(),
+                    nodeName: tagName.toUpperCase(),
+                    nodeType: 1,
+                    children: children,
+                    childNodes: children,
+                    parentNode: null,
+                    innerHTML: '',
+                    innerText: '',
+                    textContent: '',
+                    className: '',
+                    id: '',
+                    style: new Proxy(styles, {
+                        get: function(target, prop) { return target[prop] || ''; },
+                        set: function(target, prop, value) { target[prop] = value; return true; }
+                    }),
+                    setAttribute: function(name, value) { attributes[name] = value; },
+                    getAttribute: function(name) { return attributes[name] || null; },
+                    removeAttribute: function(name) { delete attributes[name]; },
+                    hasAttribute: function(name) { return name in attributes; },
+                    appendChild: function(child) {
+                        children.push(child);
+                        child.parentNode = element;
+                        return child;
+                    },
+                    removeChild: function(child) {
+                        var idx = children.indexOf(child);
+                        if (idx > -1) children.splice(idx, 1);
+                        return child;
+                    },
+                    insertBefore: function(newNode, refNode) {
+                        var idx = children.indexOf(refNode);
+                        if (idx > -1) children.splice(idx, 0, newNode);
+                        else children.push(newNode);
+                        newNode.parentNode = element;
+                        return newNode;
+                    },
+                    cloneNode: function(deep) { return createMockElement(tagName); },
+                    addEventListener: function() {},
+                    removeEventListener: function() {},
+                    dispatchEvent: function() { return true; },
+                    querySelector: function() { return null; },
+                    querySelectorAll: function() { return []; },
+                    getElementsByTagName: function() { return []; },
+                    getElementsByClassName: function() { return []; },
+                    getElementById: function() { return null; },
+                    focus: function() {},
+                    blur: function() {},
+                    click: function() {}
+                };
+                return element;
+            }
+
+            var mockHead = createMockElement('head');
+            var mockBody = createMockElement('body');
+
             let mockDoc = {
                 write: function(html) {
                     content += html;
@@ -384,13 +445,24 @@ const POPUP_HANDLER_SCRIPT: &str = r#"
                     content = '';
                     return mockDoc;
                 },
-                body: {
-                    innerHTML: ''
+                createElement: function(tagName) {
+                    return createMockElement(tagName);
                 },
-                head: {
-                    innerHTML: ''
+                createTextNode: function(text) {
+                    return { nodeType: 3, textContent: text, nodeName: '#text' };
                 },
-                title: ''
+                createDocumentFragment: function() {
+                    return createMockElement('fragment');
+                },
+                body: mockBody,
+                head: mockHead,
+                documentElement: createMockElement('html'),
+                title: '',
+                querySelector: function(sel) { return null; },
+                querySelectorAll: function(sel) { return []; },
+                getElementById: function(id) { return null; },
+                getElementsByTagName: function(tag) { return []; },
+                getElementsByClassName: function(cls) { return []; }
             };
 
             let mockWindow = {
