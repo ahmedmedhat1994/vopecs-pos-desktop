@@ -189,9 +189,9 @@ fn open_popup_window(
 fn open_print_window(app: tauri::AppHandle, content: String) -> Result<(), String> {
     let popup_id = POPUP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let label = format!("print-{}", popup_id);
+    let label_for_html = label.clone();
 
     // Create HTML with proper Arabic support and auto-print script
-    // Uses JavaScript to trigger print on load and close window after print/cancel
     let print_html = format!(
         r#"<!DOCTYPE html>
 <html dir="rtl" lang="ar">
@@ -242,57 +242,44 @@ fn open_print_window(app: tauri::AppHandle, content: String) -> Result<(), Strin
     {}
     <script>
         var printAttempted = false;
+        var windowLabel = '{}';
 
         function doPrint() {{
             if (printAttempted) return;
             printAttempted = true;
             window.print();
-            // Reset after a short delay to allow re-printing
             setTimeout(function() {{ printAttempted = false; }}, 1000);
         }}
 
         function closeWindow() {{
             if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {{
-                window.__TAURI_INTERNALS__.invoke('close_popup_window', {{ label: '{}' }});
+                window.__TAURI_INTERNALS__.invoke('close_popup_window', {{ label: windowLabel }});
             }} else {{
                 window.close();
             }}
         }}
 
-        // Auto-print after page fully loads
         window.onload = function() {{
-            setTimeout(doPrint, 500);
+            setTimeout(doPrint, 800);
         }};
 
-        // Listen for afterprint event to auto-close (works on most browsers)
         window.onafterprint = function() {{
             setTimeout(closeWindow, 500);
         }};
     </script>
 </body>
 </html>"#,
-        content, label
+        content, label_for_html
     );
 
-    // Save to temp file - use forward slashes for Windows compatibility
-    let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join(format!("vopecs_print_{}.html", popup_id));
-    fs::write(&temp_file, &print_html)
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
-
-    // Convert path to URL - handle Windows paths correctly
-    let file_url = if cfg!(windows) {
-        // Windows: file:///C:/path/to/file
-        format!("file:///{}", temp_file.to_string_lossy().replace("\\", "/"))
-    } else {
-        // Unix: file:///path/to/file
-        format!("file://{}", temp_file.to_string_lossy())
-    };
+    // Use data URL - works on all platforms including Windows WebView2
+    let encoded_html = url_encode_html(&print_html);
+    let data_url = format!("data:text/html;charset=utf-8,{}", encoded_html);
 
     let _window = WebviewWindowBuilder::new(
         &app,
         &label,
-        WebviewUrl::External(file_url.parse().map_err(|e| format!("Invalid URL: {}", e))?),
+        WebviewUrl::External(data_url.parse().map_err(|e| format!("Invalid URL: {}", e))?),
     )
     .title("طباعة")
     .inner_size(450.0, 500.0)
@@ -301,14 +288,25 @@ fn open_print_window(app: tauri::AppHandle, content: String) -> Result<(), Strin
     .build()
     .map_err(|e| format!("Failed to create print window: {}", e))?;
 
-    // Clean up temp file after a delay (in background)
-    let temp_file_clone = temp_file.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(120));
-        let _ = fs::remove_file(&temp_file_clone);
-    });
-
     Ok(())
+}
+
+// URL encode HTML for data URL
+fn url_encode_html(html: &str) -> String {
+    let mut encoded = String::with_capacity(html.len() * 3);
+    for byte in html.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            b' ' => encoded.push_str("%20"),
+            _ => {
+                encoded.push('%');
+                encoded.push_str(&format!("{:02X}", byte));
+            }
+        }
+    }
+    encoded
 }
 
 fn base64_encode(input: &str) -> String {
