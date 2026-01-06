@@ -304,6 +304,28 @@ fn close_popup_window(app: tauri::AppHandle, label: String) -> Result<(), String
 // JavaScript to inject into the webview for handling popups and print
 const POPUP_HANDLER_SCRIPT: &str = r#"
 (function() {
+    // Auto-reload if page failed to load (white screen fix)
+    if (!window.__VOPECS_RELOAD_CHECK__) {
+        window.__VOPECS_RELOAD_CHECK__ = true;
+        setTimeout(function() {
+            // Check if page is blank or has connection error
+            var body = document.body;
+            var isBlank = !body || body.innerHTML.trim() === '' || body.children.length === 0;
+            var hasError = document.title.includes('Error') || document.title.includes('404') ||
+                          document.body.innerText.includes('This site can') ||
+                          document.body.innerText.includes('ERR_') ||
+                          document.body.innerText.includes('refused to connect');
+
+            if (isBlank || hasError) {
+                console.log('[VOPECS Desktop] Page appears blank or has error, reloading...');
+                window.__VOPECS_RELOAD_ATTEMPTS__ = (window.__VOPECS_RELOAD_ATTEMPTS__ || 0) + 1;
+                if (window.__VOPECS_RELOAD_ATTEMPTS__ < 5) {
+                    setTimeout(function() { location.reload(); }, 1000);
+                }
+            }
+        }, 2000);
+    }
+
     // Wait for Tauri to be ready
     function initPopupHandlers() {
         console.log('[VOPECS Desktop] Initializing popup handlers...');
