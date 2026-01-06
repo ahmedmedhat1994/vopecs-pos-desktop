@@ -622,18 +622,48 @@ async fn check_for_updates(app: tauri::AppHandle) {
                     let version = update.version.clone();
                     let msg = format!("A new version ({}) is available. Do you want to download and install it?", version);
 
-                    app.dialog()
+                    let confirmed = app.dialog()
                         .message(msg)
                         .title("Update Available")
+                        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancel)
                         .kind(MessageDialogKind::Info)
                         .blocking_show();
 
-                    // Download and install
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
-                            eprintln!("Failed to install update: {}", e);
+                    if confirmed {
+                        // Show downloading message
+                        let app_clone = app.clone();
+
+                        // Download and install
+                        match update.download_and_install(
+                            |downloaded, total| {
+                                if let Some(t) = total {
+                                    let percent = (downloaded as f64 / t as f64 * 100.0) as u32;
+                                    println!("Downloading update: {}%", percent);
+                                }
+                            },
+                            || {
+                                println!("Download complete, installing...");
+                            }
+                        ).await {
+                            Ok(_) => {
+                                app_clone.dialog()
+                                    .message("Update installed successfully. The app will now restart.")
+                                    .title("Update Complete")
+                                    .kind(MessageDialogKind::Info)
+                                    .blocking_show();
+
+                                // Restart the app
+                                app_clone.restart();
+                            }
+                            Err(e) => {
+                                app_clone.dialog()
+                                    .message(format!("Failed to install update: {}", e))
+                                    .title("Update Error")
+                                    .kind(MessageDialogKind::Error)
+                                    .blocking_show();
+                            }
                         }
-                    });
+                    }
                 }
                 Ok(None) => {
                     app.dialog()
