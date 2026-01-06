@@ -5,14 +5,13 @@ use tauri::Manager;
 use tauri::WebviewWindowBuilder;
 use tauri::WebviewUrl;
 use tauri::menu::{Menu, MenuItem, Submenu};
+use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use rusqlite::{Connection, params};
-
-mod database;
-use database::{init_database, get_db_path};
+use std::sync::atomic::AtomicU32;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppSettings {
@@ -36,8 +35,10 @@ impl Default for AppSettings {
 struct AppState {
     settings: Mutex<AppSettings>,
     settings_path: PathBuf,
-    db_path: PathBuf,
 }
+
+// Counter for unique popup window labels
+static POPUP_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn get_settings_path(app: &tauri::App) -> PathBuf {
     let app_data_dir = app.path().app_data_dir().expect("Failed to get app data dir");
@@ -102,360 +103,6 @@ fn toggle_fullscreen(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
-// ==================== DATABASE COMMANDS ====================
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Product {
-    pub id: i64,
-    pub code: String,
-    pub name: String,
-    pub price: f64,
-    pub cost: Option<f64>,
-    pub category_id: Option<i64>,
-    pub brand_id: Option<i64>,
-    pub unit_id: Option<i64>,
-    pub sale_unit_id: Option<i64>,
-    pub tax_method: Option<String>,
-    pub tax_percent: Option<f64>,
-    pub discount: Option<f64>,
-    pub discount_method: Option<String>,
-    pub image: Option<String>,
-    pub is_service: bool,
-    pub stock_qty: f64,
-    pub min_stock: Option<f64>,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Client {
-    pub id: i64,
-    pub name: String,
-    pub phone: Option<String>,
-    pub email: Option<String>,
-    pub address: Option<String>,
-    pub tax_number: Option<String>,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct OfflineSale {
-    pub id: Option<i64>,
-    pub local_ref: String,
-    pub client_id: Option<i64>,
-    pub warehouse_id: i64,
-    pub grand_total: f64,
-    pub paid_amount: f64,
-    pub tax_amount: f64,
-    pub discount: f64,
-    pub payment_method_id: i64,
-    pub details_json: String,
-    pub payments_json: String,
-    pub status: String,
-    pub created_at: String,
-    pub synced_at: Option<String>,
-    pub server_sale_id: Option<i64>,
-    pub error_message: Option<String>,
-}
-
-#[tauri::command]
-fn db_get_products(state: tauri::State<AppState>) -> Result<Vec<Product>, String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-
-    let mut stmt = conn.prepare(
-        "SELECT id, code, name, price, cost, category_id, brand_id, unit_id, sale_unit_id,
-                tax_method, tax_percent, discount, discount_method, image, is_service,
-                stock_qty, min_stock, updated_at
-         FROM products ORDER BY name"
-    ).map_err(|e| e.to_string())?;
-
-    let products = stmt.query_map([], |row| {
-        Ok(Product {
-            id: row.get(0)?,
-            code: row.get(1)?,
-            name: row.get(2)?,
-            price: row.get(3)?,
-            cost: row.get(4)?,
-            category_id: row.get(5)?,
-            brand_id: row.get(6)?,
-            unit_id: row.get(7)?,
-            sale_unit_id: row.get(8)?,
-            tax_method: row.get(9)?,
-            tax_percent: row.get(10)?,
-            discount: row.get(11)?,
-            discount_method: row.get(12)?,
-            image: row.get(13)?,
-            is_service: row.get(14)?,
-            stock_qty: row.get(15)?,
-            min_stock: row.get(16)?,
-            updated_at: row.get(17)?,
-        })
-    }).map_err(|e| e.to_string())?;
-
-    let result: Vec<Product> = products.filter_map(|p| p.ok()).collect();
-    Ok(result)
-}
-
-#[tauri::command]
-fn db_get_product_by_code(state: tauri::State<AppState>, code: String) -> Result<Option<Product>, String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-
-    let mut stmt = conn.prepare(
-        "SELECT id, code, name, price, cost, category_id, brand_id, unit_id, sale_unit_id,
-                tax_method, tax_percent, discount, discount_method, image, is_service,
-                stock_qty, min_stock, updated_at
-         FROM products WHERE code = ? LIMIT 1"
-    ).map_err(|e| e.to_string())?;
-
-    let product = stmt.query_row([&code], |row| {
-        Ok(Product {
-            id: row.get(0)?,
-            code: row.get(1)?,
-            name: row.get(2)?,
-            price: row.get(3)?,
-            cost: row.get(4)?,
-            category_id: row.get(5)?,
-            brand_id: row.get(6)?,
-            unit_id: row.get(7)?,
-            sale_unit_id: row.get(8)?,
-            tax_method: row.get(9)?,
-            tax_percent: row.get(10)?,
-            discount: row.get(11)?,
-            discount_method: row.get(12)?,
-            image: row.get(13)?,
-            is_service: row.get(14)?,
-            stock_qty: row.get(15)?,
-            min_stock: row.get(16)?,
-            updated_at: row.get(17)?,
-        })
-    }).ok();
-
-    Ok(product)
-}
-
-#[tauri::command]
-fn db_search_products(state: tauri::State<AppState>, query: String) -> Result<Vec<Product>, String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-
-    let search_pattern = format!("%{}%", query);
-
-    let mut stmt = conn.prepare(
-        "SELECT id, code, name, price, cost, category_id, brand_id, unit_id, sale_unit_id,
-                tax_method, tax_percent, discount, discount_method, image, is_service,
-                stock_qty, min_stock, updated_at
-         FROM products
-         WHERE name LIKE ? OR code LIKE ?
-         ORDER BY name LIMIT 50"
-    ).map_err(|e| e.to_string())?;
-
-    let products = stmt.query_map([&search_pattern, &search_pattern], |row| {
-        Ok(Product {
-            id: row.get(0)?,
-            code: row.get(1)?,
-            name: row.get(2)?,
-            price: row.get(3)?,
-            cost: row.get(4)?,
-            category_id: row.get(5)?,
-            brand_id: row.get(6)?,
-            unit_id: row.get(7)?,
-            sale_unit_id: row.get(8)?,
-            tax_method: row.get(9)?,
-            tax_percent: row.get(10)?,
-            discount: row.get(11)?,
-            discount_method: row.get(12)?,
-            image: row.get(13)?,
-            is_service: row.get(14)?,
-            stock_qty: row.get(15)?,
-            min_stock: row.get(16)?,
-            updated_at: row.get(17)?,
-        })
-    }).map_err(|e| e.to_string())?;
-
-    let result: Vec<Product> = products.filter_map(|p| p.ok()).collect();
-    Ok(result)
-}
-
-#[tauri::command]
-fn db_save_products(state: tauri::State<AppState>, products: Vec<Product>) -> Result<i64, String> {
-    let mut conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-
-    // Clear existing products
-    tx.execute("DELETE FROM products", []).map_err(|e| e.to_string())?;
-
-    for product in &products {
-        tx.execute(
-            "INSERT INTO products (id, code, name, price, cost, category_id, brand_id, unit_id,
-                                   sale_unit_id, tax_method, tax_percent, discount, discount_method,
-                                   image, is_service, stock_qty, min_stock, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-            params![
-                product.id, product.code, product.name, product.price, product.cost,
-                product.category_id, product.brand_id, product.unit_id, product.sale_unit_id,
-                product.tax_method, product.tax_percent, product.discount, product.discount_method,
-                product.image, product.is_service, product.stock_qty, product.min_stock, product.updated_at
-            ],
-        ).map_err(|e| e.to_string())?;
-    }
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(products.len() as i64)
-}
-
-#[tauri::command]
-fn db_get_clients(state: tauri::State<AppState>) -> Result<Vec<Client>, String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-
-    let mut stmt = conn.prepare(
-        "SELECT id, name, phone, email, address, tax_number, updated_at FROM clients ORDER BY name"
-    ).map_err(|e| e.to_string())?;
-
-    let clients = stmt.query_map([], |row| {
-        Ok(Client {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            phone: row.get(2)?,
-            email: row.get(3)?,
-            address: row.get(4)?,
-            tax_number: row.get(5)?,
-            updated_at: row.get(6)?,
-        })
-    }).map_err(|e| e.to_string())?;
-
-    let result: Vec<Client> = clients.filter_map(|c| c.ok()).collect();
-    Ok(result)
-}
-
-#[tauri::command]
-fn db_save_clients(state: tauri::State<AppState>, clients: Vec<Client>) -> Result<i64, String> {
-    let mut conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-
-    // Clear existing clients
-    tx.execute("DELETE FROM clients", []).map_err(|e| e.to_string())?;
-
-    for client in &clients {
-        tx.execute(
-            "INSERT INTO clients (id, name, phone, email, address, tax_number, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                client.id, client.name, client.phone, client.email,
-                client.address, client.tax_number, client.updated_at
-            ],
-        ).map_err(|e| e.to_string())?;
-    }
-
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(clients.len() as i64)
-}
-
-#[tauri::command]
-fn db_save_offline_sale(state: tauri::State<AppState>, sale: OfflineSale) -> Result<i64, String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-
-    conn.execute(
-        "INSERT INTO offline_sales (local_ref, client_id, warehouse_id, grand_total, paid_amount,
-                                    tax_amount, discount, payment_method_id, details_json,
-                                    payments_json, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![
-            sale.local_ref, sale.client_id, sale.warehouse_id, sale.grand_total,
-            sale.paid_amount, sale.tax_amount, sale.discount, sale.payment_method_id,
-            sale.details_json, sale.payments_json, "pending", sale.created_at
-        ],
-    ).map_err(|e| e.to_string())?;
-
-    let id = conn.last_insert_rowid();
-    Ok(id)
-}
-
-#[tauri::command]
-fn db_get_pending_sales(state: tauri::State<AppState>) -> Result<Vec<OfflineSale>, String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-
-    let mut stmt = conn.prepare(
-        "SELECT id, local_ref, client_id, warehouse_id, grand_total, paid_amount, tax_amount,
-                discount, payment_method_id, details_json, payments_json, status, created_at,
-                synced_at, server_sale_id, error_message
-         FROM offline_sales WHERE status = 'pending' ORDER BY created_at"
-    ).map_err(|e| e.to_string())?;
-
-    let sales = stmt.query_map([], |row| {
-        Ok(OfflineSale {
-            id: row.get(0)?,
-            local_ref: row.get(1)?,
-            client_id: row.get(2)?,
-            warehouse_id: row.get(3)?,
-            grand_total: row.get(4)?,
-            paid_amount: row.get(5)?,
-            tax_amount: row.get(6)?,
-            discount: row.get(7)?,
-            payment_method_id: row.get(8)?,
-            details_json: row.get(9)?,
-            payments_json: row.get(10)?,
-            status: row.get(11)?,
-            created_at: row.get(12)?,
-            synced_at: row.get(13)?,
-            server_sale_id: row.get(14)?,
-            error_message: row.get(15)?,
-        })
-    }).map_err(|e| e.to_string())?;
-
-    let result: Vec<OfflineSale> = sales.filter_map(|s| s.ok()).collect();
-    Ok(result)
-}
-
-#[tauri::command]
-fn db_mark_sale_synced(state: tauri::State<AppState>, local_id: i64, server_sale_id: i64) -> Result<(), String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-
-    conn.execute(
-        "UPDATE offline_sales SET status = 'synced', server_sale_id = ?1, synced_at = datetime('now') WHERE id = ?2",
-        params![server_sale_id, local_id],
-    ).map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-#[tauri::command]
-fn db_mark_sale_failed(state: tauri::State<AppState>, local_id: i64, error: String) -> Result<(), String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-
-    conn.execute(
-        "UPDATE offline_sales SET status = 'failed', error_message = ?1 WHERE id = ?2",
-        params![error, local_id],
-    ).map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-#[tauri::command]
-fn db_get_products_count(state: tauri::State<AppState>) -> Result<i64, String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM products", [], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
-    Ok(count)
-}
-
-#[tauri::command]
-fn db_get_pending_sales_count(state: tauri::State<AppState>) -> Result<i64, String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM offline_sales WHERE status = 'pending'", [], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
-    Ok(count)
-}
-
-#[tauri::command]
-fn db_update_product_stock(state: tauri::State<AppState>, product_id: i64, new_qty: f64) -> Result<(), String> {
-    let conn = Connection::open(&state.db_path).map_err(|e| e.to_string())?;
-
-    conn.execute(
-        "UPDATE products SET stock_qty = ?1, updated_at = datetime('now') WHERE id = ?2",
-        params![new_qty, product_id],
-    ).map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
 fn open_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     // Check if already open
     if app.get_webview_window("settings").is_some() {
@@ -493,41 +140,430 @@ fn open_main_devtools(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn print_page(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.print().map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Main window not found".to_string())
+    }
+}
+
+#[tauri::command]
+fn open_in_browser(url: String) -> Result<(), String> {
+    open::that(&url).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_popup_window(
+    app: tauri::AppHandle,
+    url: String,
+    title: Option<String>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<String, String> {
+    let popup_id = POPUP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let label = format!("popup-{}", popup_id);
+
+    let window_title = title.unwrap_or_else(|| "VOPECS POS".to_string());
+    let window_width = width.unwrap_or(800.0);
+    let window_height = height.unwrap_or(600.0);
+
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::External(url.parse().map_err(|e| format!("Invalid URL: {}", e))?),
+    )
+    .title(&window_title)
+    .inner_size(window_width, window_height)
+    .resizable(true)
+    .center()
+    .build()
+    .map_err(|e| format!("Failed to create popup: {}", e))?;
+
+    Ok(label)
+}
+
+#[tauri::command]
+fn open_print_window(app: tauri::AppHandle, content: String) -> Result<(), String> {
+    let popup_id = POPUP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let label = format!("print-{}", popup_id);
+
+    // Create HTML with proper Arabic support - minimal margins for single page print
+    let print_html = format!(
+        r#"<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>طباعة</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap');
+        * {{ font-family: 'Cairo', 'Segoe UI', Tahoma, Arial, sans-serif !important; margin: 0; padding: 0; box-sizing: border-box; }}
+        html, body {{ direction: rtl; text-align: right; margin: 0; padding: 0; }}
+        @media print {{
+            html, body {{ margin: 0 !important; padding: 0 !important; }}
+            @page {{ margin: 5mm; }}
+        }}
+    </style>
+</head>
+<body>{}</body>
+</html>"#,
+        content
+    );
+
+    // Save to temp file for proper origin (file:// URLs work better with print)
+    let temp_dir = std::env::temp_dir();
+    let temp_file = temp_dir.join(format!("vopecs_print_{}.html", popup_id));
+    fs::write(&temp_file, &print_html)
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+
+    let file_url = format!("file://{}", temp_file.to_string_lossy());
+
+    let window = WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::External(file_url.parse().map_err(|e| format!("Invalid URL: {}", e))?),
+    )
+    .title("طباعة")
+    .inner_size(450.0, 400.0)
+    .resizable(true)
+    .center()
+    .build()
+    .map_err(|e| format!("Failed to create print window: {}", e))?;
+
+    // Auto-trigger print dialog from Rust after window loads
+    let window_clone = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let _ = window_clone.print();
+    });
+
+    // Clean up temp file after a delay
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        let _ = fs::remove_file(&temp_file);
+    });
+
+    Ok(())
+}
+
+fn base64_encode(input: &str) -> String {
+    use std::io::Write;
+    let mut buf = Vec::new();
+    {
+        let mut encoder = Base64Encoder::new(&mut buf);
+        encoder.write_all(input.as_bytes()).unwrap();
+    }
+    String::from_utf8(buf).unwrap()
+}
+
+struct Base64Encoder<W: std::io::Write> {
+    writer: W,
+}
+
+impl<W: std::io::Write> Base64Encoder<W> {
+    fn new(writer: W) -> Self {
+        Self { writer }
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for Base64Encoder<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+        for chunk in buf.chunks(3) {
+            let b0 = chunk[0] as usize;
+            let b1 = chunk.get(1).map(|&b| b as usize).unwrap_or(0);
+            let b2 = chunk.get(2).map(|&b| b as usize).unwrap_or(0);
+
+            let c0 = ALPHABET[b0 >> 2];
+            let c1 = ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)];
+            let c2 = if chunk.len() > 1 { ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] } else { b'=' };
+            let c3 = if chunk.len() > 2 { ALPHABET[b2 & 0x3f] } else { b'=' };
+
+            self.writer.write_all(&[c0, c1, c2, c3])?;
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
+    }
+}
+
+#[tauri::command]
+fn close_popup_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&label) {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// JavaScript to inject into the webview for handling popups and print
+const POPUP_HANDLER_SCRIPT: &str = r#"
+(function() {
+    // Wait for Tauri to be ready
+    function initPopupHandlers() {
+        console.log('[VOPECS Desktop] Initializing popup handlers...');
+        console.log('[VOPECS Desktop] __TAURI__ available:', typeof window.__TAURI__ !== 'undefined');
+        console.log('[VOPECS Desktop] __TAURI_INTERNALS__ available:', typeof window.__TAURI_INTERNALS__ !== 'undefined');
+
+        // Store original window.open (only once)
+        if (window.__VOPECS_ORIGINAL_OPEN__) return;
+        window.__VOPECS_ORIGINAL_OPEN__ = window.open;
+
+        // Create a mock window for print popups
+        function createPrintWindow() {
+            let content = '';
+            let printFrame = null;
+
+            function doPrint() {
+                console.log('[VOPECS Desktop] Executing print, content length:', content.length);
+
+                // Create a blob URL from the content
+                let blob = new Blob([content], { type: 'text/html' });
+                let blobUrl = URL.createObjectURL(blob);
+                console.log('[VOPECS Desktop] Created blob URL:', blobUrl);
+
+                // Open a new Tauri window with the blob content
+                if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+                    console.log('[VOPECS Desktop] Opening print window via Tauri...');
+                    window.__TAURI_INTERNALS__.invoke('open_print_window', {
+                        content: content
+                    }).then(function() {
+                        console.log('[VOPECS Desktop] Print window opened');
+                        URL.revokeObjectURL(blobUrl);
+                    }).catch(function(err) {
+                        console.error('[VOPECS Desktop] Failed to open print window:', err);
+                        URL.revokeObjectURL(blobUrl);
+                    });
+                } else {
+                    console.error('[VOPECS Desktop] Tauri not available');
+                    URL.revokeObjectURL(blobUrl);
+                }
+            }
+
+            let mockDoc = {
+                write: function(html) {
+                    content += html;
+                    console.log('[VOPECS Desktop] Print window write:', html.substring(0, 100) + '...');
+                },
+                writeln: function(html) {
+                    content += html + '\n';
+                },
+                close: function() {
+                    console.log('[VOPECS Desktop] Print window document closed, triggering print...');
+                    // Auto-print when document is closed (common pattern)
+                    setTimeout(doPrint, 100);
+                },
+                open: function() {
+                    content = '';
+                    return mockDoc;
+                },
+                body: {
+                    innerHTML: ''
+                },
+                head: {
+                    innerHTML: ''
+                },
+                title: ''
+            };
+
+            let mockWindow = {
+                document: mockDoc,
+                print: function() {
+                    console.log('[VOPECS Desktop] Mock window.print() called');
+                    doPrint();
+                },
+                close: function() {
+                    console.log('[VOPECS Desktop] Mock window closed');
+                    if (printFrame && printFrame.parentNode) {
+                        printFrame.parentNode.removeChild(printFrame);
+                        printFrame = null;
+                    }
+                },
+                focus: function() { console.log('[VOPECS Desktop] Mock window focus'); },
+                blur: function() {},
+                closed: false,
+                location: { href: 'about:blank' },
+                name: '',
+                opener: window,
+                innerWidth: 400,
+                innerHeight: 600
+            };
+
+            return mockWindow;
+        }
+
+        // Override window.open
+        window.open = function(url, target, features) {
+            console.log('[VOPECS Desktop] window.open called:', url, target, features);
+
+            // If empty URL or about:blank - this is typically for print popups
+            if (!url || url === '' || url === 'about:blank') {
+                console.log('[VOPECS Desktop] Creating mock print window');
+                return createPrintWindow();
+            }
+
+            // If it's a javascript: URL, ignore
+            if (url.startsWith('javascript:')) {
+                return null;
+            }
+
+            // Convert relative URLs to absolute
+            let absoluteUrl = url;
+            try {
+                if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('file://') && !url.startsWith('blob:') && !url.startsWith('data:')) {
+                    absoluteUrl = new URL(url, window.location.href).href;
+                }
+            } catch(e) {
+                absoluteUrl = url;
+            }
+
+            // Parse features for width/height
+            let width = 900;
+            let height = 700;
+            if (features) {
+                const widthMatch = features.match(/width=(\d+)/);
+                const heightMatch = features.match(/height=(\d+)/);
+                if (widthMatch) width = parseInt(widthMatch[1]);
+                if (heightMatch) height = parseInt(heightMatch[1]);
+            }
+
+            // Try Tauri IPC to open a real popup
+            if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+                console.log('[VOPECS Desktop] Opening popup via Tauri:', absoluteUrl);
+                window.__TAURI_INTERNALS__.invoke('open_popup_window', {
+                    url: absoluteUrl,
+                    title: target || null,
+                    width: width,
+                    height: height
+                }).then(label => {
+                    console.log('[VOPECS Desktop] Popup opened:', label);
+                }).catch(err => {
+                    console.error('[VOPECS Desktop] Popup failed:', err);
+                });
+            }
+
+            // Return a mock window for compatibility
+            return createPrintWindow();
+        };
+
+        // Handle links with target="_blank"
+        document.addEventListener('click', function(e) {
+            let el = e.target;
+            while (el && el.tagName !== 'A') {
+                el = el.parentElement;
+            }
+            if (el && el.tagName === 'A' && (el.target === '_blank' || el.getAttribute('target') === '_blank')) {
+                console.log('[VOPECS Desktop] Intercepted _blank link:', el.href);
+                e.preventDefault();
+                e.stopPropagation();
+                if (el.href) {
+                    window.open(el.href, '_blank');
+                }
+            }
+        }, true);
+
+        console.log('[VOPECS Desktop] Popup and print handlers initialized');
+    }
+
+    // Initialize only once
+    if (!window.__VOPECS_INITIALIZED__) {
+        window.__VOPECS_INITIALIZED__ = true;
+        initPopupHandlers();
+    }
+})();
+"#;
+
+// Check for updates from GitHub releases
+async fn check_for_updates(app: tauri::AppHandle) {
+    match app.updater() {
+        Ok(updater) => {
+            match updater.check().await {
+                Ok(Some(update)) => {
+                    let version = update.version.clone();
+                    let msg = format!("A new version ({}) is available. Do you want to download and install it?", version);
+
+                    app.dialog()
+                        .message(msg)
+                        .title("Update Available")
+                        .kind(MessageDialogKind::Info)
+                        .blocking_show();
+
+                    // Download and install
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+                            eprintln!("Failed to install update: {}", e);
+                        }
+                    });
+                }
+                Ok(None) => {
+                    app.dialog()
+                        .message("You are running the latest version.")
+                        .title("No Updates")
+                        .kind(MessageDialogKind::Info)
+                        .blocking_show();
+                }
+                Err(e) => {
+                    app.dialog()
+                        .message(format!("Failed to check for updates: {}", e))
+                        .title("Update Error")
+                        .kind(MessageDialogKind::Error)
+                        .blocking_show();
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Updater not available: {}", e);
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_sql::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|_window, event| {
+            // Handle window events if needed
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    // Allow closing popup windows
+                }
+                _ => {}
+            }
+        })
+        .on_page_load(|webview, _payload| {
+            // Inject popup handler script when page loads
+            let _ = webview.eval(POPUP_HANDLER_SCRIPT);
+        })
         .setup(|app| {
             let settings_path = get_settings_path(app);
             let settings = load_settings(&settings_path);
 
-            // Initialize SQLite database
-            let db_path = get_db_path(app);
-            if let Err(e) = init_database(&db_path) {
-                eprintln!("Failed to initialize database: {}", e);
-            } else {
-                println!("Database initialized at: {:?}", db_path);
-            }
-
             // Store state
             app.manage(AppState {
-                settings: Mutex::new(settings),
+                settings: Mutex::new(settings.clone()),
                 settings_path,
-                db_path,
             });
 
-            // Create menu
-            let settings_item = MenuItem::with_id(app, "settings", "⚙️ الإعدادات", true, Some("CmdOrCtrl+,"))?;
-            let reload_item = MenuItem::with_id(app, "reload", "🔄 إعادة تحميل", true, Some("CmdOrCtrl+R"))?;
-            let fullscreen_item = MenuItem::with_id(app, "fullscreen", "📺 ملء الشاشة", true, Some("F11"))?;
-            let devtools_item = MenuItem::with_id(app, "devtools", "🔧 Developer Tools", true, Some("CmdOrCtrl+Shift+I"))?;
-            let quit_item = MenuItem::with_id(app, "quit", "❌ خروج", true, Some("CmdOrCtrl+Q"))?;
+            // Create menu (English labels)
+            let settings_item = MenuItem::with_id(app, "settings", "Settings", true, Some("CmdOrCtrl+,"))?;
+            let reload_item = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
+            let clear_cache_item = MenuItem::with_id(app, "clear_cache", "Clear Cache", true, Some("CmdOrCtrl+Shift+R"))?;
+            let fullscreen_item = MenuItem::with_id(app, "fullscreen", "Fullscreen", true, Some("F11"))?;
+            let check_update_item = MenuItem::with_id(app, "check_update", "Check for Updates", true, None::<&str>)?;
+            let devtools_item = MenuItem::with_id(app, "devtools", "Developer Tools", true, Some("CmdOrCtrl+Shift+I"))?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, Some("CmdOrCtrl+Q"))?;
 
             let app_menu = Submenu::with_items(
                 app,
                 "VOPECS POS",
                 true,
-                &[&settings_item, &reload_item, &fullscreen_item, &devtools_item, &quit_item],
+                &[&settings_item, &reload_item, &clear_cache_item, &fullscreen_item, &check_update_item, &devtools_item, &quit_item],
             )?;
 
             let menu = Menu::with_items(app, &[&app_menu])?;
@@ -549,12 +585,38 @@ fn main() {
                             let _ = window.navigate(url.parse().unwrap());
                         }
                     }
+                    "clear_cache" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            // Clear WebView cache and reload
+                            let _ = window.eval("
+                                if ('caches' in window) {
+                                    caches.keys().then(names => {
+                                        names.forEach(name => caches.delete(name));
+                                    });
+                                }
+                                if ('serviceWorker' in navigator) {
+                                    navigator.serviceWorker.getRegistrations().then(regs => {
+                                        regs.forEach(reg => reg.unregister());
+                                    });
+                                }
+                                localStorage.clear();
+                                sessionStorage.clear();
+                                location.reload(true);
+                            ");
+                        }
+                    }
                     "fullscreen" => {
                         if let Some(window) = app.get_webview_window("main") {
                             if let Ok(is_fullscreen) = window.is_fullscreen() {
                                 let _ = window.set_fullscreen(!is_fullscreen);
                             }
                         }
+                    }
+                    "check_update" => {
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            check_for_updates(app_handle).await;
+                        });
                     }
                     "devtools" => {
                         if let Some(window) = app.get_webview_window("main") {
@@ -578,20 +640,11 @@ fn main() {
             toggle_fullscreen,
             open_settings,
             open_main_devtools,
-            // Database commands
-            db_get_products,
-            db_get_product_by_code,
-            db_search_products,
-            db_save_products,
-            db_get_clients,
-            db_save_clients,
-            db_save_offline_sale,
-            db_get_pending_sales,
-            db_mark_sale_synced,
-            db_mark_sale_failed,
-            db_get_products_count,
-            db_get_pending_sales_count,
-            db_update_product_stock,
+            open_popup_window,
+            close_popup_window,
+            print_page,
+            open_in_browser,
+            open_print_window,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running VOPECS POS");
