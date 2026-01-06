@@ -427,6 +427,9 @@ const POPUP_HANDLER_SCRIPT: &str = r#"
 
             var mockHead = createMockElement('head');
             var mockBody = createMockElement('body');
+            var mockHtml = createMockElement('html');
+            mockHtml.appendChild(mockHead);
+            mockHtml.appendChild(mockBody);
 
             let mockDoc = {
                 write: function(html) {
@@ -456,12 +459,27 @@ const POPUP_HANDLER_SCRIPT: &str = r#"
                 },
                 body: mockBody,
                 head: mockHead,
-                documentElement: createMockElement('html'),
+                documentElement: mockHtml,
                 title: '',
-                querySelector: function(sel) { return null; },
-                querySelectorAll: function(sel) { return []; },
+                querySelector: function(sel) {
+                    if (sel === 'head') return mockHead;
+                    if (sel === 'body') return mockBody;
+                    if (sel === 'html') return mockHtml;
+                    return null;
+                },
+                querySelectorAll: function(sel) {
+                    if (sel === 'head') return [mockHead];
+                    if (sel === 'body') return [mockBody];
+                    return [];
+                },
                 getElementById: function(id) { return null; },
-                getElementsByTagName: function(tag) { return []; },
+                getElementsByTagName: function(tag) {
+                    tag = tag.toLowerCase();
+                    if (tag === 'head') return [mockHead];
+                    if (tag === 'body') return [mockBody];
+                    if (tag === 'html') return [mockHtml];
+                    return [];
+                },
                 getElementsByClassName: function(cls) { return []; }
             };
 
