@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2.0.0",
   "productName": "VOPECS POS",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "identifier": "com.vopecs.pos",
   "build": {
     "beforeBuildCommand": "",
@@ -21,7 +21,7 @@
         "resizable": true,
         "fullscreen": false,
         "center": true,
-        "url": "http://vopecspos.test/",
+        "url": "about:blank",
         "incognito": false,
         "devtools": true,
         "zoomHotkeysEnabled": true
@@ -60,7 +60,7 @@
       "endpoints": [
         "https://github.com/ahmedmedhat1994/vopecs-pos-desktop/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgxODg0RTY2NzE4QjI2NzgKUldSNEpvdHhaazZJZ1J3d0tRR2QyUDQzcHA4b2NoVEZsN2hSVkNIWG81Tmp2OVVxZFBIdCtUdGIK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyQkM4RDMyODg1MTEwRTAKUldUZ0VGR0lNbzI4TXQ3TmxsaW5ka1dPVjZUUGthWVpUZEV6ang5eC9TQjYwUEdOaFRnMkF1UU8K"
     }
   }
 }

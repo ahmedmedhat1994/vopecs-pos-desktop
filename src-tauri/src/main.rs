@@ -24,7 +24,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            server_url: "http://vopecspos.test/".to_string(),
+            server_url: "https://po.megacaresa.com/".to_string(),
             window_width: 1400,
             window_height: 900,
             fullscreen: false,
@@ -307,23 +307,46 @@ const POPUP_HANDLER_SCRIPT: &str = r#"
     // Auto-reload if page failed to load (white screen fix)
     if (!window.__VOPECS_RELOAD_CHECK__) {
         window.__VOPECS_RELOAD_CHECK__ = true;
-        setTimeout(function() {
-            // Check if page is blank or has connection error
-            var body = document.body;
-            var isBlank = !body || body.innerHTML.trim() === '' || body.children.length === 0;
-            var hasError = document.title.includes('Error') || document.title.includes('404') ||
-                          document.body.innerText.includes('This site can') ||
-                          document.body.innerText.includes('ERR_') ||
-                          document.body.innerText.includes('refused to connect');
+        window.__VOPECS_RELOAD_ATTEMPTS__ = window.__VOPECS_RELOAD_ATTEMPTS__ || 0;
 
-            if (isBlank || hasError) {
-                console.log('[VOPECS Desktop] Page appears blank or has error, reloading...');
-                window.__VOPECS_RELOAD_ATTEMPTS__ = (window.__VOPECS_RELOAD_ATTEMPTS__ || 0) + 1;
-                if (window.__VOPECS_RELOAD_ATTEMPTS__ < 5) {
-                    setTimeout(function() { location.reload(); }, 1000);
-                }
+        function checkAndReload() {
+            var body = document.body;
+            var html = document.documentElement;
+
+            // Check various signs of a failed/blank page
+            var isBlank = !body || !html || body.innerHTML.trim() === '' || body.children.length === 0;
+            var hasErrorText = body && (
+                body.innerText.includes('This site can') ||
+                body.innerText.includes('ERR_') ||
+                body.innerText.includes('refused to connect') ||
+                body.innerText.includes('not be reached') ||
+                body.innerText.includes('took too long')
+            );
+            var hasErrorTitle = document.title.includes('Error') || document.title === '';
+
+            // Check if Vue/Angular app has mounted (look for app content)
+            var hasAppContent = document.querySelector('#app') ||
+                               document.querySelector('.app-content') ||
+                               document.querySelector('[data-v-]') ||
+                               document.querySelector('main') ||
+                               (body && body.children.length > 3);
+
+            var needsReload = (isBlank || hasErrorText) && !hasAppContent;
+
+            if (needsReload && window.__VOPECS_RELOAD_ATTEMPTS__ < 10) {
+                window.__VOPECS_RELOAD_ATTEMPTS__++;
+                console.log('[VOPECS Desktop] Page appears blank or has error, reloading... (attempt ' + window.__VOPECS_RELOAD_ATTEMPTS__ + ')');
+                setTimeout(function() { location.reload(); }, 500);
+            } else if (!hasAppContent && window.__VOPECS_RELOAD_ATTEMPTS__ < 10) {
+                // Schedule another check
+                setTimeout(checkAndReload, 1000);
             }
-        }, 2000);
+        }
+
+        // Check at multiple intervals to catch different loading states
+        setTimeout(checkAndReload, 1000);
+        setTimeout(checkAndReload, 3000);
+        setTimeout(checkAndReload, 5000);
     }
 
     // Wait for Tauri to be ready
@@ -662,6 +685,13 @@ fn main() {
                 settings_path,
             });
 
+            // Navigate to saved URL
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(url) = settings.server_url.parse() {
+                    let _ = window.navigate(url);
+                }
+            }
+
             // Create menu (English labels)
             let settings_item = MenuItem::with_id(app, "settings", "Settings", true, Some("CmdOrCtrl+,"))?;
             let reload_item = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
@@ -680,6 +710,24 @@ fn main() {
 
             let menu = Menu::with_items(app, &[&app_menu])?;
             app.set_menu(menu)?;
+
+            // Auto-reload mechanism for white screen fix
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                // Wait for initial load attempt
+                std::thread::sleep(std::time::Duration::from_secs(3));
+
+                for attempt in 1..=5 {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        // Force reload if page is blank
+                        let _ = window.eval(&format!(
+                            "if (!document.body || document.body.children.length < 3) {{ console.log('[VOPECS] Attempt {} - reloading...'); location.reload(); }}",
+                            attempt
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+            });
 
             // Handle menu events
             app.on_menu_event(move |app, event| {
