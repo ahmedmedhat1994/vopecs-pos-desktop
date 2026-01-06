@@ -372,304 +372,166 @@ const POPUP_HANDLER_SCRIPT: &str = r#"
         function checkAndReload() {
             var body = document.body;
             var html = document.documentElement;
-
-            // Check various signs of a failed/blank page
             var isBlank = !body || !html || body.innerHTML.trim() === '' || body.children.length === 0;
             var hasErrorText = body && (
                 body.innerText.includes('This site can') ||
                 body.innerText.includes('ERR_') ||
-                body.innerText.includes('refused to connect') ||
-                body.innerText.includes('not be reached') ||
-                body.innerText.includes('took too long')
+                body.innerText.includes('refused to connect')
             );
-            var hasErrorTitle = document.title.includes('Error') || document.title === '';
-
-            // Check if Vue/Angular app has mounted (look for app content)
             var hasAppContent = document.querySelector('#app') ||
                                document.querySelector('.app-content') ||
                                document.querySelector('[data-v-]') ||
-                               document.querySelector('main') ||
                                (body && body.children.length > 3);
 
-            var needsReload = (isBlank || hasErrorText) && !hasAppContent;
-
-            if (needsReload && window.__VOPECS_RELOAD_ATTEMPTS__ < 10) {
+            if ((isBlank || hasErrorText) && !hasAppContent && window.__VOPECS_RELOAD_ATTEMPTS__ < 5) {
                 window.__VOPECS_RELOAD_ATTEMPTS__++;
-                console.log('[VOPECS Desktop] Page appears blank or has error, reloading... (attempt ' + window.__VOPECS_RELOAD_ATTEMPTS__ + ')');
                 setTimeout(function() { location.reload(); }, 500);
-            } else if (!hasAppContent && window.__VOPECS_RELOAD_ATTEMPTS__ < 10) {
-                // Schedule another check
-                setTimeout(checkAndReload, 1000);
             }
         }
-
-        // Check at multiple intervals to catch different loading states
-        setTimeout(checkAndReload, 1000);
-        setTimeout(checkAndReload, 3000);
-        setTimeout(checkAndReload, 5000);
+        setTimeout(checkAndReload, 2000);
     }
 
-    // Wait for Tauri to be ready
+    // Initialize popup and print handlers
     function initPopupHandlers() {
-        console.log('[VOPECS Desktop] Initializing popup handlers...');
-        console.log('[VOPECS Desktop] __TAURI__ available:', typeof window.__TAURI__ !== 'undefined');
-        console.log('[VOPECS Desktop] __TAURI_INTERNALS__ available:', typeof window.__TAURI_INTERNALS__ !== 'undefined');
+        if (window.__VOPECS_INITIALIZED__) return;
+        window.__VOPECS_INITIALIZED__ = true;
+        console.log('[VOPECS] Initializing handlers...');
 
-        // Store original window.open (only once)
-        if (window.__VOPECS_ORIGINAL_OPEN__) return;
-        window.__VOPECS_ORIGINAL_OPEN__ = window.open;
+        // IFRAME-BASED PRINT - Works reliably on all platforms including Windows
+        function printWithIframe(htmlContent) {
+            console.log('[VOPECS] Printing with iframe, content length:', htmlContent.length);
 
-        // Create a mock window for print popups
-        function createPrintWindow() {
-            let content = '';
-            let printFrame = null;
+            // Remove any existing print iframe
+            var existingFrame = document.getElementById('vopecs-print-frame');
+            if (existingFrame) existingFrame.remove();
 
-            function doPrint() {
-                console.log('[VOPECS Desktop] Executing print, content length:', content.length);
+            // Create hidden iframe
+            var iframe = document.createElement('iframe');
+            iframe.id = 'vopecs-print-frame';
+            iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+            document.body.appendChild(iframe);
 
-                // Create a blob URL from the content
-                let blob = new Blob([content], { type: 'text/html' });
-                let blobUrl = URL.createObjectURL(blob);
-                console.log('[VOPECS Desktop] Created blob URL:', blobUrl);
+            var iframeDoc = iframe.contentWindow.document;
+            iframeDoc.open();
+            iframeDoc.write(htmlContent);
+            iframeDoc.close();
 
-                // Open a new Tauri window with the blob content
-                if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
-                    console.log('[VOPECS Desktop] Opening print window via Tauri...');
-                    window.__TAURI_INTERNALS__.invoke('open_print_window', {
-                        content: content
-                    }).then(function() {
-                        console.log('[VOPECS Desktop] Print window opened');
-                        URL.revokeObjectURL(blobUrl);
-                    }).catch(function(err) {
-                        console.error('[VOPECS Desktop] Failed to open print window:', err);
-                        URL.revokeObjectURL(blobUrl);
-                    });
-                } else {
-                    console.error('[VOPECS Desktop] Tauri not available');
-                    URL.revokeObjectURL(blobUrl);
+            // Wait for content to load then print
+            setTimeout(function() {
+                try {
+                    iframe.contentWindow.focus();
+                    iframe.contentWindow.print();
+                } catch(e) {
+                    console.error('[VOPECS] Print error:', e);
                 }
-            }
+                // Clean up after print dialog closes
+                setTimeout(function() {
+                    iframe.remove();
+                }, 1000);
+            }, 500);
+        }
 
-            // Create a mock element that supports common DOM operations
-            function createMockElement(tagName) {
-                var children = [];
-                var attributes = {};
-                var styles = {};
-                var element = {
-                    tagName: tagName.toUpperCase(),
-                    nodeName: tagName.toUpperCase(),
-                    nodeType: 1,
-                    children: children,
-                    childNodes: children,
-                    parentNode: null,
-                    innerHTML: '',
-                    innerText: '',
-                    textContent: '',
-                    className: '',
-                    id: '',
-                    style: new Proxy(styles, {
-                        get: function(target, prop) { return target[prop] || ''; },
-                        set: function(target, prop, value) { target[prop] = value; return true; }
-                    }),
-                    setAttribute: function(name, value) { attributes[name] = value; },
-                    getAttribute: function(name) { return attributes[name] || null; },
-                    removeAttribute: function(name) { delete attributes[name]; },
-                    hasAttribute: function(name) { return name in attributes; },
-                    appendChild: function(child) {
-                        children.push(child);
-                        child.parentNode = element;
-                        return child;
-                    },
-                    removeChild: function(child) {
-                        var idx = children.indexOf(child);
-                        if (idx > -1) children.splice(idx, 1);
-                        return child;
-                    },
-                    insertBefore: function(newNode, refNode) {
-                        var idx = children.indexOf(refNode);
-                        if (idx > -1) children.splice(idx, 0, newNode);
-                        else children.push(newNode);
-                        newNode.parentNode = element;
-                        return newNode;
-                    },
-                    cloneNode: function(deep) { return createMockElement(tagName); },
-                    addEventListener: function() {},
-                    removeEventListener: function() {},
-                    dispatchEvent: function() { return true; },
-                    querySelector: function() { return null; },
-                    querySelectorAll: function() { return []; },
-                    getElementsByTagName: function() { return []; },
-                    getElementsByClassName: function() { return []; },
-                    getElementById: function() { return null; },
-                    focus: function() {},
-                    blur: function() {},
-                    click: function() {}
-                };
-                return element;
-            }
+        // Create mock window that uses iframe for printing
+        function createPrintWindow() {
+            var content = '';
 
-            var mockHead = createMockElement('head');
-            var mockBody = createMockElement('body');
-            var mockHtml = createMockElement('html');
-            mockHtml.appendChild(mockHead);
-            mockHtml.appendChild(mockBody);
-
-            let mockDoc = {
-                write: function(html) {
-                    content += html;
-                    console.log('[VOPECS Desktop] Print window write:', html.substring(0, 100) + '...');
-                },
-                writeln: function(html) {
-                    content += html + '\n';
-                },
+            var mockDoc = {
+                write: function(html) { content += html; },
+                writeln: function(html) { content += html + '\n'; },
                 close: function() {
-                    console.log('[VOPECS Desktop] Print window document closed, triggering print...');
-                    // Auto-print when document is closed (common pattern)
-                    setTimeout(doPrint, 100);
+                    console.log('[VOPECS] Document closed, printing...');
+                    setTimeout(function() { printWithIframe(content); }, 100);
                 },
-                open: function() {
-                    content = '';
-                    return mockDoc;
-                },
-                createElement: function(tagName) {
-                    return createMockElement(tagName);
+                open: function() { content = ''; return mockDoc; },
+                createElement: function(tag) {
+                    return document.createElement(tag);
                 },
                 createTextNode: function(text) {
-                    return { nodeType: 3, textContent: text, nodeName: '#text' };
+                    return document.createTextNode(text);
                 },
-                createDocumentFragment: function() {
-                    return createMockElement('fragment');
-                },
-                body: mockBody,
-                head: mockHead,
-                documentElement: mockHtml,
-                title: '',
-                querySelector: function(sel) {
-                    if (sel === 'head') return mockHead;
-                    if (sel === 'body') return mockBody;
-                    if (sel === 'html') return mockHtml;
-                    return null;
-                },
-                querySelectorAll: function(sel) {
-                    if (sel === 'head') return [mockHead];
-                    if (sel === 'body') return [mockBody];
-                    return [];
-                },
-                getElementById: function(id) { return null; },
-                getElementsByTagName: function(tag) {
-                    tag = tag.toLowerCase();
-                    if (tag === 'head') return [mockHead];
-                    if (tag === 'body') return [mockBody];
-                    if (tag === 'html') return [mockHtml];
-                    return [];
-                },
-                getElementsByClassName: function(cls) { return []; }
+                body: { appendChild: function(){}, innerHTML: '' },
+                head: { appendChild: function(){} },
+                documentElement: { appendChild: function(){} }
             };
 
-            let mockWindow = {
+            return {
                 document: mockDoc,
-                print: function() {
-                    console.log('[VOPECS Desktop] Mock window.print() called');
-                    doPrint();
-                },
-                close: function() {
-                    console.log('[VOPECS Desktop] Mock window closed');
-                    if (printFrame && printFrame.parentNode) {
-                        printFrame.parentNode.removeChild(printFrame);
-                        printFrame = null;
-                    }
-                },
-                focus: function() { console.log('[VOPECS Desktop] Mock window focus'); },
+                print: function() { printWithIframe(content); },
+                close: function() { console.log('[VOPECS] Window closed'); },
+                focus: function() {},
                 blur: function() {},
                 closed: false,
                 location: { href: 'about:blank' },
-                name: '',
-                opener: window,
-                innerWidth: 400,
-                innerHeight: 600
+                opener: window
             };
-
-            return mockWindow;
         }
+
+        // Store original window.open
+        window.__VOPECS_ORIGINAL_OPEN__ = window.open;
 
         // Override window.open
         window.open = function(url, target, features) {
-            console.log('[VOPECS Desktop] window.open called:', url, target, features);
+            console.log('[VOPECS] window.open:', url, target);
 
-            // If empty URL or about:blank - this is typically for print popups
+            // Empty URL = print popup, use iframe method
             if (!url || url === '' || url === 'about:blank') {
-                console.log('[VOPECS Desktop] Creating mock print window');
                 return createPrintWindow();
             }
 
-            // If it's a javascript: URL, ignore
-            if (url.startsWith('javascript:')) {
+            // javascript: URLs - ignore
+            if (url && url.startsWith('javascript:')) {
                 return null;
             }
 
             // Convert relative URLs to absolute
-            let absoluteUrl = url;
+            var absoluteUrl = url;
             try {
-                if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('file://') && !url.startsWith('blob:') && !url.startsWith('data:')) {
+                if (url && !url.match(/^(https?|file|blob|data):/)) {
                     absoluteUrl = new URL(url, window.location.href).href;
                 }
-            } catch(e) {
-                absoluteUrl = url;
-            }
+            } catch(e) {}
 
-            // Parse features for width/height
-            let width = 900;
-            let height = 700;
+            // Parse width/height from features
             if (features) {
-                const widthMatch = features.match(/width=(\d+)/);
-                const heightMatch = features.match(/height=(\d+)/);
-                if (widthMatch) width = parseInt(widthMatch[1]);
-                if (heightMatch) height = parseInt(heightMatch[1]);
+                var wm = features.match(/width=(\d+)/);
+                var hm = features.match(/height=(\d+)/);
+                if (wm) width = parseInt(wm[1]);
+                if (hm) height = parseInt(hm[1]);
             }
 
-            // Try Tauri IPC to open a real popup
+            // For actual URLs, open in system browser (most reliable on Windows)
+            console.log('[VOPECS] Opening URL in browser:', absoluteUrl);
             if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
-                console.log('[VOPECS Desktop] Opening popup via Tauri:', absoluteUrl);
-                window.__TAURI_INTERNALS__.invoke('open_popup_window', {
-                    url: absoluteUrl,
-                    title: target || null,
-                    width: width,
-                    height: height
-                }).then(label => {
-                    console.log('[VOPECS Desktop] Popup opened:', label);
-                }).catch(err => {
-                    console.error('[VOPECS Desktop] Popup failed:', err);
-                });
+                window.__TAURI_INTERNALS__.invoke('open_in_browser', { url: absoluteUrl });
             }
 
-            // Return a mock window for compatibility
-            return createPrintWindow();
+            // Return mock window for compatibility
+            return {
+                document: { write: function(){}, close: function(){}, body: {} },
+                close: function() {},
+                focus: function() {},
+                closed: false,
+                location: { href: absoluteUrl }
+            };
         };
 
-        // Handle links with target="_blank"
+        // Handle target="_blank" links - open in browser
         document.addEventListener('click', function(e) {
-            let el = e.target;
-            while (el && el.tagName !== 'A') {
-                el = el.parentElement;
-            }
-            if (el && el.tagName === 'A' && (el.target === '_blank' || el.getAttribute('target') === '_blank')) {
-                console.log('[VOPECS Desktop] Intercepted _blank link:', el.href);
+            var el = e.target;
+            while (el && el.tagName !== 'A') el = el.parentElement;
+            if (el && el.tagName === 'A' && el.target === '_blank' && el.href) {
                 e.preventDefault();
-                e.stopPropagation();
-                if (el.href) {
-                    window.open(el.href, '_blank');
+                console.log('[VOPECS] Opening link in browser:', el.href);
+                if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+                    window.__TAURI_INTERNALS__.invoke('open_in_browser', { url: el.href });
                 }
             }
         }, true);
 
-        console.log('[VOPECS Desktop] Popup and print handlers initialized');
+        console.log('[VOPECS] Handlers initialized');
     }
 
-    // Initialize only once
-    if (!window.__VOPECS_INITIALIZED__) {
-        window.__VOPECS_INITIALIZED__ = true;
-        initPopupHandlers();
-    }
+    initPopupHandlers();
 })();
 "#;
 
